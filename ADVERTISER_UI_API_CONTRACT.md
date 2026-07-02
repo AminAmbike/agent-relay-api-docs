@@ -27,7 +27,11 @@ file and parse it directly; no renderer required.
 6. **Example** — a real `curl` + JSON.
 
 **Conventions used in tables**
-- `Req` = required. `↳` prefix = a field nested inside the array/object on the row above it.
+- `Req` = required.
+- **Nested fields:** when a field is an array or object, it appears as a single row in the main table,
+  and its members are documented in a **separate sub-table right below**, titled **`<field>[] element`**
+  (for arrays) or **`<field>` object**. So `campaign_earnings` is one row in the response table, and each
+  item's fields live in the `campaign_earnings[] element` table beneath it.
 - Types are TypeScript-style. `uuid`/`int`/`cents`/`dollars` are annotations, not literal TS types.
 - ⚠️ callouts flag units, ignored fields, and misleading names.
 
@@ -468,7 +472,8 @@ proxy:  /api/proxy/advertiser-campaigns
 | budget | dollars | Total budget. |
 | budget_spent | dollars | Spent to date. |
 | bid_cpc / bid_cpm | dollars \| null | Bids. |
-| impressions / clicks | int | Ad-serving counters. |
+| impressions | int | **The UI "Shown" column.** Times this capability was surfaced in search/auction. |
+| clicks | int | **The UI "Total Convos" column.** A repurposed counter meant to hold the per-campaign conversation count. ⚠️ It is a *stored counter*, not auto-derived from sessions — it can drift and must be kept in sync (it equals the live `advertiser_conversation_log` count per capability when correct). See [Deriving counts](#deriving-per-campaign-counts). |
 | payments_enabled | boolean | Paid-capability toggle. |
 | deliverable_price_cents | cents \| null | Price when payments enabled. |
 | capability_enabled | boolean | Whether the capability is live. |
@@ -614,22 +619,30 @@ per-campaign earnings.
 | wallet_balance | dollars | Prepaid ad-spend balance. |
 | earnings_balance | cents | Withdrawable seller earnings. |
 | lifetime_earnings | cents | Sum of `campaign_earnings[].net_cents` (never decreases on withdrawal). |
-| campaign_earnings | array | Per-campaign earnings, sorted by `net_cents` desc. |
-| ↳ campaign_id | uuid | |
-| ↳ campaign_name | string | Display name (may be a uuid slice if unnamed). |
-| ↳ sale_count | int | Number of paid sales. |
-| ↳ net_cents | cents | Earnings after platform fee. |
-| ↳ gross_cents | cents | Before fee. |
-| ↳ fee_cents | cents | Platform fee. |
-| ↳ last_sale_at | timestamptz | Most recent sale. |
-| wallet_transactions | array | Last 50, newest first — the wallet history. |
-| ↳ id | uuid | |
-| ↳ amount | number | Transaction amount (sign indicates direction). |
-| ↳ type | string | e.g. `topup`, `charge`, `withdrawal`. |
-| ↳ status | string | e.g. `completed`. |
-| ↳ description | string \| null | |
-| ↳ created_at | timestamptz | |
-| ↳ metadata | object | Extra context. |
+| campaign_earnings | array | Per-campaign seller earnings, sorted by `net_cents` desc. See sub-table. |
+| wallet_transactions | array | Last 50 wallet ledger rows, newest first (the wallet history). See sub-table. |
+
+**`campaign_earnings[]` element**
+| Field | Type | Description |
+|---|---|---|
+| campaign_id | uuid | The campaign. |
+| campaign_name | string | Display name (may be a uuid slice if unnamed). |
+| sale_count | int | Number of paid sales. |
+| net_cents | cents | Earnings after platform fee. |
+| gross_cents | cents | Before fee. |
+| fee_cents | cents | Platform fee. |
+| last_sale_at | timestamptz | Most recent sale. |
+
+**`wallet_transactions[]` element**
+| Field | Type | Description |
+|---|---|---|
+| id | uuid | |
+| amount | number | Transaction amount (sign indicates direction). |
+| type | string | e.g. `topup`, `charge`, `withdrawal`. |
+| status | string | e.g. `completed`. |
+| description | string \| null | |
+| created_at | timestamptz | |
+| metadata | object | Extra context. |
 
 ```ts
 interface BillingResponse {
@@ -821,9 +834,9 @@ Request: `{ action:"list_sessions", campaign_id?, limit?, offset?, start_date?, 
 | total_cost_usd | number | Session cost. |
 | status | string | `active` \| `completed` \| `expired` \| `cancelled`. |
 | started_at / last_updated_at / ended_at | timestamptz | `ended_at` null while active. |
-| auction_query | string \| null | The query that surfaced the capability (if via auction). |
-| auction_result_count | int | |
-| session_origin | string | `auction` \| `direct`. |
+| auction_query | string \| null | The raw user query the auction ran with (if this session came via auction). Resolved read-time from the `decisions` record; null for direct sessions. |
+| auction_result_count | int | Number of ad units/candidates **shown in that auction** (the field size). 0 / null for direct sessions. |
+| session_origin | string | `auction` (surfaced via an auction) or `direct` (launched directly). |
 
 ### action: `get_session`
 Request: `{ action:"get_session", session_id }`. Response: `{ item: SessionDetail }` = everything from
@@ -835,6 +848,27 @@ Request: `{ action:"get_session", session_id }`. Response: `{ item: SessionDetai
 | conversation_history | Array&lt;{role, content}&gt; | ⚠️ **The full transcript.** `role` ∈ `user`/`assistant`; ordered. |
 | structured_data | object | Fields the agent extracted during the session (open-ended). |
 | task_context | string \| null | The initiating task/context. |
+| auction_ranking | object \| null | **Powers the "Auction" ranking card** (this capability's rank + the anonymized competitor scores). Only present on `get_session` for **auction-origin** sessions; null for direct or when the decision can't be resolved. See sub-table. |
+
+**`auction_ranking` object** (only on `get_session`)
+| Field | Type | Description |
+|---|---|---|
+| position | int \| null | This capability's rank in the auction — the `#1` in "Ranked #1 of 50". |
+| candidate_count | int \| null | Total candidates in the auction — the `50`. `candidate_count − field.length` = the "+ N more · others anonymized" count. |
+| field | array | The visible ranked rows, competitor identities stripped. See sub-table. |
+
+**`auction_ranking.field[]` element**
+| Field | Type | Description |
+|---|---|---|
+| relevance | number \| null | The per-row relevance score shown as the number (2-dp, e.g. `1.00`). |
+| composite | number \| null | Composite ranking score (drives the bar length). |
+| is_you | boolean | `true` = this advertiser's own agent (rendered bold as "Your agent"); `false` rows render as "Competitor N". |
+
+> **Where the card comes from:** "Ranked #1 of 50 for '<query>'" = `auction_ranking.position` of
+> `.candidate_count`, with `auction_query` as the query. Each bar is a `field[]` row (`relevance` as the
+> number, `is_you` flags your agent). The "+45 more · others anonymized" line is
+> `candidate_count − field.length`. All of this is on `get_session` only — `list_sessions` carries just
+> `auction_query` / `auction_result_count` / `session_origin`.
 
 Errors: `400 missing_params`, `403 forbidden` (other advertiser), `404 not_found`.
 
@@ -888,8 +922,11 @@ matched_campaign_ids, created_at`). `get_search` `{ action:"get_search", id }` �
 # Appendix
 
 ## Deriving per-campaign counts
-`advertiser-campaigns` and `advertiser-stats` do **not** return a conversation count or feedback count.
-To show "total conversations" or "feedback count" per campaign, call `campaign-logs` and group client-side:
+`advertiser-campaigns` returns a `clicks` counter that the current UI renders as the **"Total Convos"**
+column, but it's a **stored counter that can drift** from the real session count (it has to be kept in
+sync). `advertiser-campaigns`/`advertiser-stats` do **not** return a live conversation or feedback count.
+The **robust** way to show conversations/feedback per campaign is to call `campaign-logs` and group
+client-side:
 
 ```ts
 // conversations per campaign
