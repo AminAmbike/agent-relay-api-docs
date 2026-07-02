@@ -24,7 +24,8 @@ file and parse it directly; no renderer required.
 3. **Request** — a field table (`Field | Type | Req | Description`) + a canonical `ts` interface.
 4. **Response** — a field table (`Field | Type | Description`) + a canonical `ts` interface.
 5. **Errors** — `HTTP | code | when`.
-6. **Example** — a real `curl` + JSON.
+6. **Examples** — a request + response for **every** endpoint is collected in the [Examples](#examples)
+   section at the end.
 
 **Conventions used in tables**
 - `Req` = required.
@@ -952,6 +953,295 @@ for (const f of fb.items) feedbackByCampaign.set(f.capability_id, (feedbackByCam
 | `capability_type` (campaign-create) | ignored — always `dynamic` |
 | `agent_calls` (expected on campaigns) | **does not exist** — derive from `list_sessions` |
 | `budget.spent` (advertiser-stats) | *estimated* spend from events, not `budget_spent` |
+
+# Examples
+
+A request + response for every endpoint. **All values are illustrative** (fake ids/emails/amounts).
+
+Placeholders:
+- `$BASE` = `https://peruwnbrqkvmrldhpoom.supabase.co/functions/v1`
+- `$ANON` = the Supabase anon/publishable key (sent as the `apikey` header on every call)
+- `$JWT` = the advertiser `access_token` from `advertiser-login`
+
+## 1. advertiser-signup
+```bash
+curl -X POST "$BASE/advertiser-signup" -H "apikey: $ANON" -H "Content-Type: application/json" -d '{
+  "contact_email": "owner@acme.co", "company_name": "Acme Co",
+  "contact_name": "Dana Lee", "password": "S3curePass1", "website": "https://acme.co", "industry": "SaaS"
+}'
+```
+```json
+{ "advertiser_id": "11111111-1111-1111-1111-111111111111",
+  "api_key": "adv_0f3c9b2a…e91a", "company_name": "Acme Co", "status": "active",
+  "message": "Account created." }
+```
+
+## 2. advertiser-login
+```bash
+curl -X POST "$BASE/advertiser-login" -H "apikey: $ANON" -H "Content-Type: application/json" -d '{
+  "contact_email": "owner@acme.co", "password": "S3curePass1"
+}'
+```
+```json
+{ "success": true, "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…",
+  "refresh_token": "v1.MRf…", "expires_in": 3600,
+  "advertiser_id": "11111111-1111-1111-1111-111111111111", "company_name": "Acme Co", "status": "active" }
+```
+
+## 3. advertiser-profile
+```bash
+# read (empty body); update by sending { "updates": { ... } }
+curl -X POST "$BASE/advertiser-profile" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{ "updates": { "website": "https://acme.dev" } }'
+```
+```json
+{ "advertiser": {
+    "id": "11111111-1111-1111-1111-111111111111", "company_name": "Acme Co", "contact_name": "Dana Lee",
+    "contact_email": "owner@acme.co", "website": "https://acme.dev", "industry": "SaaS", "status": "active",
+    "wallet_balance": 95.52, "earnings_balance": 0, "sms_opted_in": false, "sms_phone_number": null,
+    "stripe_connect_status": "not_connected", "stripe_account_id": null, "stripe_connected_at": null,
+    "created_at": "2026-06-01T12:00:00Z" } }
+```
+
+## 4. campaign-create
+```bash
+curl -X POST "$BASE/campaign-create" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{
+  "name": "Realtime Webhooks API", "budget": 100, "bid_cpc": 0.50,
+  "intent_description": "Reliable webhook delivery with retries and a dead-letter queue",
+  "system_prompt": "You help agents integrate our webhook API…",
+  "example_queries": ["reliable webhook delivery", "webhook retries"],
+  "required_inputs": [{ "field_name": "endpoint_url", "type": "link", "required": true, "description": "Where to deliver webhooks" }],
+  "payments_enabled": false
+}'
+```
+```json
+{ "success": true, "campaign_id": "22222222-2222-2222-2222-222222222222",
+  "ad_unit_id": "44444444-4444-4444-4444-444444444444", "capability_type": "dynamic",
+  "message": "Campaign created." }
+```
+
+## 5. campaign-update
+```bash
+curl -X POST "$BASE/campaign-update" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{
+  "campaign_id": "22222222-2222-2222-2222-222222222222",
+  "updates": { "status": "paused", "budget": 150 }
+}'
+```
+```json
+{ "success": true, "campaign_id": "22222222-2222-2222-2222-222222222222",
+  "updated_fields": ["status", "budget"] }
+```
+
+## 6. advertiser-campaigns
+```bash
+curl -X POST "$BASE/advertiser-campaigns" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{}'
+```
+```json
+{ "campaigns": [ {
+    "id": "22222222-2222-2222-2222-222222222222", "advertiser_id": "11111111-1111-1111-1111-111111111111",
+    "name": "Realtime Webhooks API", "status": "active", "budget": 100, "budget_spent": 8,
+    "bid_cpc": 0.50, "bid_cpm": null, "impressions": 24, "clicks": 6,
+    "payments_enabled": false, "deliverable_price_cents": null, "capability_enabled": true,
+    "capability_config": { "required_fields": { "endpoint_url": { "type": "link", "required": true } },
+      "system_prompt": "You help agents…" },
+    "intent_description": "Reliable webhook delivery…", "quality_score": 0.8, "metadata": {},
+    "created_at": "2026-06-10T09:00:00Z", "updated_at": "2026-06-29T02:00:00Z",
+    "ad_units": [ { "action_url": "https://acme.co/webhooks" } ] } ] }
+```
+
+## 7. advertiser-stats
+```bash
+curl "$BASE/advertiser-stats?period=30d" -H "apikey: $ANON" -H "Authorization: Bearer $JWT"
+```
+```json
+{ "advertiser_id": "11111111-1111-1111-1111-111111111111", "company_name": "Acme Co",
+  "wallet_balance": 95.52,
+  "wallet_transactions": [ { "id": "…", "amount_cents": 5000, "type": "topup", "description": "Wallet top-up", "created_at": "2026-06-20T14:00:00Z" } ],
+  "period": { "start": "2026-05-30T…", "end": "2026-06-29T…", "label": "Last 30 days" },
+  "budget": { "total": 100, "spent": 8, "remaining": 92, "currency": "USD" },
+  "metrics": { "impressions": 24, "clicks": 6, "conversions": 0, "ctr": "25.00", "cvr": "0.00", "cost_per_click": "1.33", "cost_per_conversion": "0.00" },
+  "spend_breakdown": { "cpm_spend": "0.00", "cpc_spend": "8.00", "total": "8.00" },
+  "campaigns": [ { "campaign_id": "22222222-…", "name": "Realtime Webhooks API", "status": "active",
+    "budget": 100, "spent": 8, "bid_cpc": 0.50, "bid_cpm": null, "impressions": 24, "clicks": 6, "ctr": "25.00", "created_at": "2026-06-10T09:00:00Z" } ] }
+```
+
+## 8. agent-test
+```bash
+# actions: list | start | message | end
+curl -X POST "$BASE/agent-test" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{
+  "action": "start", "campaign_id": "22222222-2222-2222-2222-222222222222",
+  "initial_message": "How do I configure retries?"
+}'
+```
+```json
+{ "session_id": "33333333-3333-3333-3333-333333333333", "status": "active",
+  "message": "Happy to help! Retries use exponential backoff…", "pending_fields": ["endpoint_url"],
+  "structured_data": {}, "expires_at": "2026-06-29T03:00:00Z", "tokens_used": 1200, "cost_usd": 0.004 }
+```
+
+## 9. upload-knowledge-docs
+```bash
+curl -X POST "$BASE/upload-knowledge-docs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -F campaign_id=22222222-2222-2222-2222-222222222222 -F kind=knowledge -F file=@./integration-guide.pdf
+```
+```json
+{ "success": true, "storage_path": "campaigns/22222222-…/integration-guide.pdf",
+  "file_name": "integration-guide.pdf", "file_size": 48213, "processing_status": "queued",
+  "message": "Uploaded and queued for processing." }
+```
+
+## 10. advertiser-billing
+```bash
+curl -X POST "$BASE/advertiser-billing" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{}'
+```
+```json
+{ "wallet_balance": 95.52, "earnings_balance": 1240, "lifetime_earnings": 1240,
+  "campaign_earnings": [ { "campaign_id": "22222222-…", "campaign_name": "Realtime Webhooks API",
+      "sale_count": 4, "net_cents": 1240, "gross_cents": 1600, "fee_cents": 360, "last_sale_at": "2026-06-28T18:00:00Z" } ],
+  "wallet_transactions": [ { "id": "…", "amount": 50, "type": "topup", "status": "completed",
+      "description": "Wallet top-up", "created_at": "2026-06-20T14:00:00Z", "metadata": {} } ] }
+```
+
+## 11. add-funds
+```bash
+curl -X POST "$BASE/add-funds" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{ "amount_cents": 5000 }'
+```
+```json
+{ "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_a1B2c3…" }
+```
+
+## 12. request-withdrawal
+```bash
+curl -X POST "$BASE/request-withdrawal" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{
+  "amount_cents": 1000, "client_request_id": "77777777-7777-7777-7777-777777777777"
+}'
+```
+```json
+{ "success": true, "withdrawal_id": "…", "transfer_id": "tr_1P9x…", "new_earnings_balance": 2.40 }
+```
+
+## 13. stripe-connect-init
+```bash
+curl -X POST "$BASE/stripe-connect-init" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Origin: https://portal.example.com" -H "Content-Type: application/json" -d '{}'
+```
+```json
+{ "url": "https://connect.stripe.com/oauth/authorize?client_id=ca_…&state=…", "already_connected": false, "stripe_account_id": null }
+```
+
+## 14. stripe-connect-callback
+```bash
+# Browser redirect target from Stripe — not called by the app. Returns 302.
+GET "$BASE/stripe-connect-callback?code=ac_123&state=<hmac-signed>"
+# → 302 Location: https://portal.example.com/advertiser/settings?stripe=connected
+```
+
+## 15. stripe-connect-disconnect
+```bash
+curl -X POST "$BASE/stripe-connect-disconnect" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{}'
+```
+```json
+{ "disconnected": true, "previous_stripe_account_id": "acct_1P9x…", "campaigns_disabled": 2 }
+```
+
+## 16. campaign-logs
+All actions POST to `$BASE/campaign-logs` with `{ "action": "…", … }`.
+
+### list_sessions
+```bash
+curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{ "action": "list_sessions", "limit": 25 }'
+```
+```json
+{ "items": [ {
+    "session_id": "33333333-3333-3333-3333-333333333333", "capability_id": "22222222-…",
+    "ad_unit_id": "44444444-…", "agent_id": "agt_ABC123", "message_count": 3, "total_tokens": 78715,
+    "total_cost_usd": 0.197195, "status": "completed", "started_at": "2026-06-29T00:05:36Z",
+    "last_updated_at": "2026-06-29T00:09:22Z", "ended_at": "2026-06-29T00:09:22Z",
+    "auction_query": "reliable webhook delivery API", "auction_result_count": 5, "session_origin": "auction" } ],
+  "total": 1, "limit": 25, "offset": 0, "has_more": false }
+```
+
+### get_session
+```bash
+curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{ "action": "get_session", "session_id": "33333333-3333-3333-3333-333333333333" }'
+```
+```json
+{ "item": {
+    "session_id": "33333333-…", "capability_id": "22222222-…", "agent_id": "agt_ABC123",
+    "message_count": 3, "total_tokens": 78715, "total_cost_usd": 0.197195, "status": "completed",
+    "advertiser_id": "11111111-…", "task_context": "Integrate webhooks into an iOS app",
+    "auction_query": "reliable webhook delivery API", "auction_result_count": 5, "session_origin": "auction",
+    "conversation_history": [
+      { "role": "user", "content": "How do I configure retries?" },
+      { "role": "assistant", "content": "Retries use exponential backoff; set max_attempts…" } ],
+    "structured_data": { "endpoint_url": "https://acme.co/hook" },
+    "auction_ranking": { "position": 1, "candidate_count": 50, "field": [
+        { "relevance": 1.00, "composite": 0.98, "is_you": true },
+        { "relevance": 1.00, "composite": 0.97, "is_you": false },
+        { "relevance": 0.99, "composite": 0.95, "is_you": false } ] } } }
+```
+
+### list_feedback
+```bash
+curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{ "action": "list_feedback", "limit": 50 }'
+```
+```json
+{ "items": [ {
+    "id": "55555555-5555-5555-5555-555555555555", "session_id": "33333333-…", "capability_id": "22222222-…",
+    "agent_id": "agt_ABC123", "feedback_text": "Clear, production-ready integration guidance.",
+    "score": 88, "bonus_amount_cents": 0, "resolved_at": null, "created_at": "2026-06-29T00:12:00Z" } ],
+  "total": 1, "limit": 50, "offset": 0, "has_more": false }
+```
+
+### get_tool_context
+```bash
+curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{ "action": "get_tool_context", "campaign_id": "22222222-2222-2222-2222-222222222222" }'
+```
+```json
+{ "capability_id": "22222222-…",
+  "learnings": [ {
+      "key": "webhook_retry_backoff", "learning": "Agents want exponential-backoff tuning documented",
+      "description": "Several sessions asked how to tune retry intervals; the docs were silent.",
+      "surfaced_count": 2, "status": "active",
+      "evidence_session_ids": ["33333333-…", "3a3a3a3a-…"], "updated_at": "2026-07-02T02:40:00Z" } ],
+  "learning_count": 1, "last_rolled_at": "2026-07-02T02:40:00Z" }
+```
+
+### list_searches
+```bash
+curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{ "action": "list_searches", "campaign_id": "22222222-2222-2222-2222-222222222222", "limit": 20 }'
+```
+```json
+{ "items": [ {
+    "id": "…", "decision_id": "dec_…", "agent_id": "agt_ABC123", "source": "auction",
+    "query": "reliable webhook delivery API", "user_context": "building an iOS app", "result_count": 5,
+    "top_result": "22222222-…", "matched_campaign_ids": ["22222222-…"], "created_at": "2026-06-29T00:05:00Z" } ],
+  "total": 1, "limit": 20, "offset": 0, "has_more": false }
+```
+
+### get_search
+```bash
+curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{ "action": "get_search", "id": "<search_log_id>" }'
+```
+```json
+{ "item": { "id": "…", "decision_id": "dec_…", "agent_id": "agt_ABC123", "source": "auction",
+    "query": "reliable webhook delivery API", "user_context": "building an iOS app", "result_count": 5,
+    "top_result": "22222222-…", "matched_campaign_ids": ["22222222-…"], "created_at": "2026-06-29T00:05:00Z" } }
+```
 
 ---
 
