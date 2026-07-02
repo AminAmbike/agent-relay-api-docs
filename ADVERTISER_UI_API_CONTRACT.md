@@ -472,8 +472,8 @@ proxy:  /api/proxy/advertiser-campaigns
 | budget | dollars | Total budget. |
 | budget_spent | dollars | Spent to date. |
 | bid_cpc / bid_cpm | dollars \| null | Bids. |
-| impressions | int | **The UI "Shown" column.** Times this capability was surfaced in search/auction. |
-| clicks | int | **The UI "Total Convos" column.** A repurposed counter meant to hold the per-campaign conversation count. ⚠️ It is a *stored counter*, not auto-derived from sessions — it can drift and must be kept in sync (it equals the live `advertiser_conversation_log` count per capability when correct). See [Deriving counts](#deriving-per-campaign-counts). |
+| impressions | int | **The UI "Shown" column** — times this capability was surfaced in search/auction. |
+| clicks | int | **The UI "Total Convos" column** — the number of conversations this capability has had. |
 | payments_enabled | boolean | Paid-capability toggle. |
 | deliverable_price_cents | cents \| null | Price when payments enabled. |
 | capability_enabled | boolean | Whether the capability is live. |
@@ -922,26 +922,17 @@ matched_campaign_ids, created_at`). `get_search` `{ action:"get_search", id }` �
 # Appendix
 
 ## Deriving per-campaign counts
-`advertiser-campaigns` returns a `clicks` counter that the current UI renders as the **"Total Convos"**
-column, but it's a **stored counter that can drift** from the real session count (it has to be kept in
-sync). `advertiser-campaigns`/`advertiser-stats` do **not** return a live conversation or feedback count.
-The **robust** way to show conversations/feedback per campaign is to call `campaign-logs` and group
+`advertiser-campaigns.clicks` is the per-campaign conversation count (the UI's **"Total Convos"**). No
+endpoint returns a per-campaign **feedback** count directly — to show that, call `campaign-logs` and group
 client-side:
 
 ```ts
-// conversations per campaign
-const { items } = await campaignLogs("list_sessions", { limit: 1000 });
-const convosByCampaign = new Map<string, number>();
-for (const s of items) convosByCampaign.set(s.capability_id, (convosByCampaign.get(s.capability_id) ?? 0) + 1);
-
-// feedback per campaign
+// feedback count per campaign
 const fb = await campaignLogs("list_feedback", { limit: 1000 });
 const feedbackByCampaign = new Map<string, number>();
 for (const f of fb.items) feedbackByCampaign.set(f.capability_id, (feedbackByCampaign.get(f.capability_id) ?? 0) + 1);
 ```
-> `list_sessions` `total` is the count across the selected scope; for per-campaign counts, group the
-> `items` by `capability_id` (or call once per `campaign_id`). Remember `limit` clamps to 200 — page with
-> `offset`/`has_more` if a campaign can exceed 200 sessions.
+> `limit` clamps to 200 — page with `offset`/`has_more` if a campaign can exceed 200 feedback rows.
 
 ## Entity relationships
 - `campaigns.id` == `capability_id` everywhere (campaign and capability are the same object).
