@@ -23,13 +23,12 @@ file and parse it directly; no renderer required.
 2. **Purpose** — one line.
 3. **Request** — a field table (`Field | Type | Req | Description`) + a canonical `ts` interface.
 4. **Response** — a field table (`Field | Type | Description`) + a canonical `ts` interface.
-5. **Example** — a concrete `curl` request + JSON response, with real (illustrative) values, inline.
+5. **Example** — a concrete **request body (JSON)** + **response (JSON)**, inline with real (illustrative) values.
 6. **Errors** — `HTTP | code | when`.
 
-All examples use these placeholders (fake ids/emails/amounts throughout):
-- `$BASE` = `https://peruwnbrqkvmrldhpoom.supabase.co/functions/v1`
-- `$ANON` = the Supabase anon/publishable key (sent as the `apikey` header on every call)
-- `$JWT` = the advertiser `access_token` from `advertiser-login`
+Examples use fake ids/emails/amounts. Requests are shown as the **JSON body** only; every authenticated
+call also sends the headers `apikey: <anon key>`, `Authorization: Bearer <access_token from advertiser-login>`,
+and `Content-Type: application/json`. `GET` / multipart endpoints note their form instead of a JSON body.
 
 **Conventions used in tables**
 - `Req` = required.
@@ -192,12 +191,18 @@ interface SignupResponse {
 ```
 
 ### Example
-```bash
-curl -X POST "$BASE/advertiser-signup" -H "apikey: $ANON" -H "Content-Type: application/json" -d '{
-  "contact_email": "owner@acme.co", "company_name": "Acme Co",
-  "contact_name": "Dana Lee", "password": "S3curePass1", "website": "https://acme.co", "industry": "SaaS"
-}'
+**Request**
+```json
+{
+  "contact_email": "owner@acme.co",
+  "company_name": "Acme Co",
+  "contact_name": "Dana Lee",
+  "password": "S3curePass1",
+  "website": "https://acme.co",
+  "industry": "SaaS"
+}
 ```
+**Response** `201`
 ```json
 {
   "advertiser_id": "11111111-1111-1111-1111-111111111111",
@@ -265,11 +270,11 @@ interface LoginResponse {
 ```
 
 ### Example
-```bash
-curl -X POST "$BASE/advertiser-login" -H "apikey: $ANON" -H "Content-Type: application/json" -d '{
-  "contact_email": "owner@acme.co", "password": "S3curePass1"
-}'
+**Request**
+```json
+{ "contact_email": "owner@acme.co", "password": "S3curePass1" }
 ```
+**Response** `200`
 ```json
 {
   "success": true,
@@ -342,11 +347,11 @@ interface ProfileRequest {
 | ↳ created_at | timestamptz | |
 
 ### Example
-```bash
-# read (empty body); update by sending { "updates": { ... } }
-curl -X POST "$BASE/advertiser-profile" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{ "updates": { "website": "https://acme.dev" } }'
+**Request** — read = `{}`; update = send `updates`
+```json
+{ "updates": { "website": "https://acme.dev" } }
 ```
+**Response** `200`
 ```json
 {
   "advertiser": {
@@ -433,10 +438,12 @@ row and generates a matching embedding.
 | message | string | Confirmation. |
 
 ### Example
-```bash
-curl -X POST "$BASE/campaign-create" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{
-  "name": "Realtime Webhooks API", "budget": 100, "bid_cpc": 0.50,
+**Request**
+```json
+{
+  "name": "Realtime Webhooks API",
+  "budget": 100,
+  "bid_cpc": 0.50,
   "intent_description": "Reliable webhook delivery with retries and a dead-letter queue",
   "system_prompt": "You help agents integrate our webhook API…",
   "example_queries": ["reliable webhook delivery", "webhook retries"],
@@ -444,8 +451,9 @@ curl -X POST "$BASE/campaign-create" -H "apikey: $ANON" -H "Authorization: Beare
     { "field_name": "endpoint_url", "type": "link", "required": true, "description": "Where to deliver webhooks" }
   ],
   "payments_enabled": false
-}'
+}
 ```
+**Response** `200`
 ```json
 {
   "success": true,
@@ -524,13 +532,14 @@ interface CampaignUpdateRequest {
 | updated_fields | string[] | Which fields actually changed. |
 
 ### Example
-```bash
-curl -X POST "$BASE/campaign-update" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{
+**Request**
+```json
+{
   "campaign_id": "22222222-2222-2222-2222-222222222222",
   "updates": { "status": "paused", "budget": 150 }
-}'
+}
 ```
+**Response** `200`
 ```json
 {
   "success": true,
@@ -598,10 +607,11 @@ proxy:  /api/proxy/advertiser-campaigns
 > ⚠️ `intent_embedding` is present on the row (a large vector) — ignore it in the UI.
 
 ### Example
-```bash
-curl -X POST "$BASE/advertiser-campaigns" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{}'
+**Request** — all campaigns = `{}`; one campaign = `{ "campaign_id": "…" }`
+```json
+{}
 ```
+**Response** `200`
 ```json
 {
   "campaigns": [
@@ -679,9 +689,8 @@ Auth: `Authorization: Bearer <jwt>` **or** `X-Advertiser-Key: <api_key>`.
 > count either.
 
 ### Example
-```bash
-curl "$BASE/advertiser-stats?period=30d" -H "apikey: $ANON" -H "Authorization: Bearer $JWT"
-```
+**Request** — `GET /advertiser-stats?period=30d` (query params only; no body)
+**Response** `200`
 ```json
 {
   "advertiser_id": "11111111-1111-1111-1111-111111111111",
@@ -741,13 +750,15 @@ proxy:  /api/proxy/agent-test
 - **end:** `{ session_id, status:"completed", summary, conversation_history, message_count, total_tokens, total_cost_usd }`
 
 ### Example
-```bash
-curl -X POST "$BASE/agent-test" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{
-  "action": "start", "campaign_id": "22222222-2222-2222-2222-222222222222",
+**Request** (start)
+```json
+{
+  "action": "start",
+  "campaign_id": "22222222-2222-2222-2222-222222222222",
   "initial_message": "How do I configure retries?"
-}'
+}
 ```
+**Response** `200`
 ```json
 {
   "session_id": "33333333-3333-3333-3333-333333333333",
@@ -789,10 +800,8 @@ proxy:  (direct; multipart)
 - **deliverable:** `{ success:true, kind:"deliverable", storage_path, filename, byte_size, checksum_sha256, message }` — stored in private `deliverables` bucket; recorded in `capability_deliverables`; not embedded.
 
 ### Example
-```bash
-curl -X POST "$BASE/upload-knowledge-docs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -F campaign_id=22222222-2222-2222-2222-222222222222 -F kind=knowledge -F file=@./integration-guide.pdf
-```
+**Request** — `multipart/form-data` (not JSON): fields `campaign_id=22222222-…`, `kind=knowledge`, `file=@integration-guide.pdf`
+**Response** `200`
 ```json
 {
   "success": true,
@@ -873,10 +882,11 @@ interface BillingResponse {
 ```
 
 ### Example
-```bash
-curl -X POST "$BASE/advertiser-billing" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{}'
+**Request**
+```json
+{}
 ```
+**Response** `200`
 ```json
 {
   "wallet_balance": 95.52,
@@ -924,10 +934,11 @@ proxy:  /api/proxy/add-funds
 `/advertiser/billing?status=success|cancelled`; the wallet is credited by the webhook.
 
 ### Example
-```bash
-curl -X POST "$BASE/add-funds" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{ "amount_cents": 5000 }'
+**Request**
+```json
+{ "amount_cents": 5000 }
 ```
+**Response** `200`
 ```json
 { "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_a1B2c3…" }
 ```
@@ -958,12 +969,14 @@ proxy:  /api/proxy/request-withdrawal
 - **idempotent replay:** `{ success, idempotent_replay:true, withdrawal_id, status, transfer_id }`.
 
 ### Example
-```bash
-curl -X POST "$BASE/request-withdrawal" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{
-  "amount_cents": 1000, "client_request_id": "77777777-7777-7777-7777-777777777777"
-}'
+**Request**
+```json
+{
+  "amount_cents": 1000,
+  "client_request_id": "77777777-7777-7777-7777-777777777777"
+}
 ```
+**Response** `200`
 ```json
 { "success": true, "withdrawal_id": "…", "transfer_id": "tr_1P9x…", "new_earnings_balance": 2.40 }
 ```
@@ -1004,10 +1017,11 @@ No body. The function reads the `Origin` header to build the callback return URL
 | stripe_account_id | string \| null | Existing connected account, if any. |
 
 ### Example
-```bash
-curl -X POST "$BASE/stripe-connect-init" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Origin: https://portal.example.com" -H "Content-Type: application/json" -d '{}'
+**Request** — empty body; also send an `Origin` header
+```json
+{}
 ```
+**Response** `200`
 ```json
 {
   "url": "https://connect.stripe.com/oauth/authorize?client_id=ca_…&state=…",
@@ -1040,11 +1054,8 @@ and `stripe_connected_at`, then **302-redirects** to `<returnUrl>/advertiser/set
 On failure: redirects with `?stripe=error` (or renders an HTML error page).
 
 ### Example
-```bash
-# Browser redirect target from Stripe — not called by the app. Returns 302.
-GET "$BASE/stripe-connect-callback?code=ac_123&state=<hmac-signed>"
-# → 302 Location: https://portal.example.com/advertiser/settings?stripe=connected
-```
+**Request** — `GET /stripe-connect-callback?code=ac_123&state=<hmac-signed>` (browser redirect from Stripe)
+**Response** — `302 Location: https://portal.example.com/advertiser/settings?stripe=connected`
 
 ### Errors
 `400` (Stripe error / missing code|state / invalid state), `500` (secret missing / DB update failed),
@@ -1073,10 +1084,11 @@ No body.
 | campaigns_disabled | int | How many of this advertiser's campaigns had `payments_enabled` flipped off as a side effect. |
 
 ### Example
-```bash
-curl -X POST "$BASE/stripe-connect-disconnect" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{}'
+**Request**
+```json
+{}
 ```
+**Response** `200`
 ```json
 {
   "disconnected": true,
@@ -1130,11 +1142,11 @@ Request: `{ action:"list_sessions", campaign_id?, limit?, offset?, start_date?, 
 | auction_result_count | int | Number of ad units/candidates **shown in that auction** (the field size). 0 / null for direct sessions. |
 | session_origin | string | `auction` (surfaced via an auction) or `direct` (launched directly). |
 
-**Example**
-```bash
-curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{ "action": "list_sessions", "limit": 25 }'
+**Request**
+```json
+{ "action": "list_sessions", "limit": 25 }
 ```
+**Response** `200`
 ```json
 {
   "items": [
@@ -1161,7 +1173,7 @@ Request: `{ action:"get_session", session_id }`. Response: `{ item: SessionDetai
 | advertiser_id | uuid | Owner (ownership-checked). |
 | conversation_history | Array&lt;{role, content}&gt; | ⚠️ **The full transcript.** `role` ∈ `user`/`assistant`; ordered. |
 | structured_data | object | Fields the agent extracted during the session (open-ended). |
-| task_context | string \| null | The initiating task/context. |
+| task_context | string \| null | The initiating task/context — the UI's **"Current task"**. |
 | auction_ranking | object \| null | **Powers the "Auction" ranking card** (this capability's rank + the anonymized competitor scores). Only present on `get_session` for **auction-origin** sessions; null for direct or when the decision can't be resolved. See sub-table. |
 
 **`auction_ranking` object** (only on `get_session`)
@@ -1184,11 +1196,11 @@ Request: `{ action:"get_session", session_id }`. Response: `{ item: SessionDetai
 > `candidate_count − field.length`. All of this is on `get_session` only — `list_sessions` carries just
 > `auction_query` / `auction_result_count` / `session_origin`.
 
-**Example**
-```bash
-curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{ "action": "get_session", "session_id": "33333333-3333-3333-3333-333333333333" }'
+**Request**
+```json
+{ "action": "get_session", "session_id": "33333333-3333-3333-3333-333333333333" }
 ```
+**Response** `200`
 ```json
 {
   "item": {
@@ -1233,11 +1245,11 @@ Request: `{ action:"list_feedback", campaign_id?, limit?, offset?, start_date?, 
 | resolved_at | timestamptz \| null | When the bonus was resolved. |
 | created_at | timestamptz | |
 
-**Example**
-```bash
-curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{ "action": "list_feedback", "limit": 50 }'
+**Request**
+```json
+{ "action": "list_feedback", "limit": 50 }
 ```
+**Response** `200`
 ```json
 {
   "items": [
@@ -1278,11 +1290,11 @@ profile the nightly roller maintains for one capability.
 > ⚠️ **Shape changed in the pivot.** Older docs described `known_issues` / `knowledge_gaps` /
 > `learned_facts`. The live endpoint returns the flat `learnings[]` above. Build against `learnings[]`.
 
-**Example**
-```bash
-curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{ "action": "get_tool_context", "campaign_id": "22222222-2222-2222-2222-222222222222" }'
+**Request**
+```json
+{ "action": "get_tool_context", "campaign_id": "22222222-2222-2222-2222-222222222222" }
 ```
+**Response** `200`
 ```json
 {
   "capability_id": "22222222-2222-2222-2222-222222222222",
@@ -1308,11 +1320,11 @@ Errors: `400 missing_param` (no `campaign_id`), `404 not_found` (not owned).
 matched_campaign_ids, created_at`). `get_search` `{ action:"get_search", id }` → `{ item }` (the full
 row; 403 if none of `matched_campaign_ids` is owned).
 
-**Example**
-```bash
-curl -X POST "$BASE/campaign-logs" -H "apikey: $ANON" -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" -d '{ "action": "list_searches", "campaign_id": "22222222-2222-2222-2222-222222222222", "limit": 20 }'
+**Request**
+```json
+{ "action": "list_searches", "campaign_id": "22222222-2222-2222-2222-222222222222", "limit": 20 }
 ```
+**Response** `200`
 ```json
 {
   "items": [
