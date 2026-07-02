@@ -118,7 +118,11 @@ authenticated by an HMAC-signed `state` param, not a JWT.
 
 ## Endpoint index
 
-| # | Endpoint | Method | Auth | Purpose |
+Every endpoint is a Supabase **edge function** in the `Penguin-Supabase-Edge-Functions` repo: the
+**Endpoint** name is the function slug — source at `supabase/functions/<slug>/index.ts`, deployed at
+`/functions/v1/<slug>`. (`campaign-logs`'s six actions are all one function, dispatched by `body.action`.)
+
+| # | Endpoint (= edge-function slug) | Method | Auth | Purpose |
 |---|---|---|---|---|
 | 1 | [advertiser-signup](#advertiser-signup) | POST | public | Create a business account |
 | 2 | [advertiser-login](#advertiser-login) | POST | public | Log in, get a JWT |
