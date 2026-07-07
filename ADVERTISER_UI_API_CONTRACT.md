@@ -410,7 +410,8 @@ row and generates a matching embedding.
 | budget | dollars | yes | $10–$100,000. |
 | bid_cpc | dollars | yes | $0.01–$100 (max bid per click). |
 | intent_description | string | yes | What the capability does / who it's for. Drives matching. |
-| system_prompt | string | yes | The capability agent's instructions. |
+| system_prompt | string | yes | The capability agent's instructions. Do **not** embed the goal here — it's a separate field now. |
+| goal | string | yes | Business objective the session agent drives toward, e.g. `"get new customers to sign up and submit a video-gen request"`. Sanitized, ≤2000 chars. Stored as `campaigns.goal` and snapshotted onto each session as the agent's primary directive. |
 | ideal_customer | string | no | Target customer description. |
 | problem_solved | string | no | |
 | value_proposition | string | no | Defaults to `intent_description`. |
@@ -450,6 +451,7 @@ row and generates a matching embedding.
   "bid_cpc": 0.50,
   "intent_description": "Reliable webhook delivery with retries and a dead-letter queue",
   "system_prompt": "You help agents integrate our webhook API…",
+  "goal": "Get developers to sign up and make their first successful webhook delivery",
   "example_queries": ["reliable webhook delivery", "webhook retries"],
   "required_inputs": [
     { "field_name": "endpoint_url", "type": "link", "required": true, "description": "Where to deliver webhooks" }
@@ -504,6 +506,7 @@ proxy:  /api/proxy/campaign-update
 | budget | dollars | $10–$100k. |
 | bid_cpc | dollars | $0.01–$100. |
 | payments_enabled | boolean | |
+| goal | string | Business objective the agent executes on. ≤2000 chars. **No re-embed** (behavioral, not a matching signal). |
 | intent_description | string | Re-embeds; also sets `value_proposition`. |
 | problem_solved | string | Re-embeds. |
 | body | string | Re-embeds. |
@@ -601,6 +604,7 @@ proxy:  /api/proxy/advertiser-campaigns
 | capability_enabled | boolean | Whether the capability is live. |
 | capability_config | object | Includes `required_fields`, `system_prompt`, `agent_deliverable`, `fallback_message`, `api_endpoints`, `api_auth`, `knowledge_sources`. |
 | intent_description, ideal_customer, problem_solved, value_proposition | string \| null | Matching text. |
+| goal | string \| null | Business objective the agent executes on (business-goal model). `null` for pre-pivot campaigns. |
 | example_queries, negative_contexts, trigger_contexts | array | Matching signals. |
 | targeting_countries / _languages / _platforms | string[] | Targeting. |
 | quality_score | number | 0–1 quality. |
@@ -638,6 +642,7 @@ proxy:  /api/proxy/advertiser-campaigns
         "system_prompt": "You help agents…"
       },
       "intent_description": "Reliable webhook delivery…",
+      "goal": "Get developers to sign up and make their first successful webhook delivery",
       "quality_score": 0.8,
       "metadata": {},
       "created_at": "2026-06-10T09:00:00Z",
