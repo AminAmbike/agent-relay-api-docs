@@ -105,8 +105,9 @@ authenticated by an HMAC-signed `state` param, not a JWT.
 | advertiser-billing, add-funds | `jwt:uid` |
 | campaign-create, agent-test, upload-knowledge-docs | `jwt:email` |
 | campaign-logs (all actions) | `jwt:email` |
+| mcp-connection (all actions) | `jwt:email` |
 | request-withdrawal, stripe-connect-init, stripe-connect-disconnect | `jwt:email` |
-| stripe-connect-callback | `public` (HMAC state) |
+| stripe-connect-callback, mcp-oauth-callback | `public` (redirect; opaque `state`) |
 
 > `advertiser-stats` also accepts an `X-Advertiser-Key: <api_key>` header as an alternative to the JWT
 > (programmatic access).
@@ -140,6 +141,8 @@ Every endpoint is a Supabase **edge function** in the `Penguin-Supabase-Edge-Fun
 | 14 | [stripe-connect-callback](#stripe-connect-callback) | GET | public | Stripe OAuth return |
 | 15 | [stripe-connect-disconnect](#stripe-connect-disconnect) | POST | jwt:email | Unlink Stripe |
 | 16 | [campaign-logs](#campaign-logs) | POST | jwt:email | Conversations, feedback, insights |
+| 17 | [mcp-connection](#mcp-connection) | POST/GET/DELETE | jwt:email | Attach & authenticate an external MCP server (campaign tooling) |
+| 18 | [mcp-oauth-callback](#mcp-oauth-callback) | GET | public | OAuth return for an MCP connection |
 
 ---
 
@@ -424,14 +427,36 @@ row and generates a matching embedding.
 | targeting_platforms | string[] | no | Default `["web","ios","android","desktop"]`. |
 | agent_deliverable | string | no | What the agent returns to the caller. |
 | required_inputs | Array&lt;{field_name, type?, required?, description?}&gt; | no | Fields the capability must collect. `type` ∈ text/string/file/link/image/pdf (default `text`); `required` default true. Stored as `capability_config.required_fields`. |
-| api_endpoints | object[] | no | Backing API endpoints (default `[]`). |
-| api_auth | object | no | Auth config for those endpoints (default `{}`). |
+| api_endpoints | object[] | no | The agent's tools: backing HTTP endpoints and/or external **MCP servers** (default `[]`). One `AgentEndpoint` per tool source — see [`api_endpoints[] element`](#api_endpoints-element) below. |
+| api_auth | object | no | **Legacy inline** header auth for those endpoints: `{ "<HeaderName>": "<secret>" }` (default `{}`). For MCP servers prefer a `connection_id` instead (see the ⚠️ note under the sub-table). |
 | upfront_response | string | no | Stored as `fallback_message`. |
 | payments_enabled | boolean | no | Default false. |
 | metadata.payment_amount | dollars | no | Only stored (as `deliverable_price_cents`) when `payments_enabled` is true. |
 | website | string | no | Landing/booking URL → `ad_units.action_url`. |
 | knowledge_sources | Array&lt;{name, type}&gt; | no | Only name/type persisted here; upload content via `upload-knowledge-docs`. |
 | advertiser_id | uuid | no | Disambiguation only; ownership-checked against `contact_email`. |
+
+#### `api_endpoints[]` element
+Each element is one tool source. `type` selects the shape: `http` (call a REST endpoint) or `mcp` (connect to an MCP server and expose its tools). Stored verbatim in `capability_config.api_endpoints`.
+
+| Field | Type | Req | Applies to | Description |
+|---|---|---|---|---|
+| type | `"http"` \| `"mcp"` | for mcp | both | Tool source kind. Omitted ⇒ treated as `http`. |
+| name | string | yes | both | Unique key for this source. For MCP it's the namespace under which its tools are cached. |
+| description | string | yes | both | What the tool/server does (shown to the agent). |
+| url | string | yes | http | REST endpoint URL. |
+| method | string | yes | http | HTTP verb, e.g. `"POST"`. |
+| parameters | object | yes | http | JSON-Schema of the call arguments. |
+| mcp_url | string | yes | mcp | MCP server URL (streamable-HTTP). |
+| tool_filter | string[] | no | mcp | Allow-list of MCP tool names to expose (default: all). |
+| tool_prefix | string | no | mcp | Prefix added to each exposed tool name to avoid collisions, e.g. `"opentable__"`. |
+| connection_id | uuid | no | mcp | **Preferred auth.** References an `advertiser_mcp_connections` row created via [mcp-connection](#mcp-connection). At runtime the platform decrypts / refreshes that credential (API key or OAuth token) and injects it — nothing secret is stored on the campaign. Must be owned by the same advertiser or the request is rejected `400`. |
+| auth_header | string | no | both | **Legacy inline path.** Name of the header to send; its value is looked up in `api_auth`. Ignore when using `connection_id`. |
+
+> ⚠️ **Authenticating an MCP server — do this, not inline secrets.** Run the [mcp-connection](#mcp-connection) flow (`probe` → `connect`) to get a `connection_id`, then set it on the MCP endpoint and **omit** `auth_header`/`api_auth` for that server. Inline `api_auth` still works for simple API-key HTTP endpoints and is kept for back-compat, but it stores the secret in plaintext on the campaign — don't use it for MCP.
+
+#### `api_auth` object
+Legacy inline header map — `{ "<HeaderName>": "<secretValue>" }` (e.g. `{ "Authorization": "Bearer sk-…" }`). An endpoint's `auth_header` names which key here to send. Superseded by `connection_id` for MCP servers.
 
 ### Response `200`
 | Field | Type | Description |
@@ -473,7 +498,7 @@ row and generates a matching embedding.
 ### Errors
 | HTTP | code | When |
 |---|---|---|
-| 400 | — | invalid JSON / `{error:"Missing required fields", missing:[...]}` / budget or bid range |
+| 400 | — | invalid JSON / `{error:"Missing required fields", missing:[...]}` / budget or bid range / `{error:"Unknown MCP connection_id(s)", connection_ids:[…]}` (a referenced connection isn't owned by this advertiser) |
 | 401 | — | missing/invalid token |
 | 403 | — | not owner / not active |
 | 404 | — | advertiser not found |
@@ -520,8 +545,8 @@ proxy:  /api/proxy/campaign-update
 | system_prompt | string | Into `capability_config`. |
 | required_inputs | array | → `capability_config.required_fields` (⚠️ default type here is `string`, not `text`). |
 | upfront_response | string | → `fallback_message`. |
-| api_endpoints | object[] | Replaced wholesale. |
-| api_auth | object | Replaced wholesale. |
+| api_endpoints | object[] | Replaced wholesale. Same [`api_endpoints[]` element](#api_endpoints-element) shape as campaign-create, incl. MCP `connection_id`. Any referenced `connection_id` must be owned by this advertiser (else `400 {error:"Unknown MCP connection_id(s)", connection_ids:[…]}`). |
+| api_auth | object | Replaced wholesale (legacy inline header map). |
 
 ```ts
 interface CampaignUpdateRequest {
@@ -825,6 +850,224 @@ proxy:  (direct; multipart)
 ### Errors
 `401` (auth), `405` (non-POST), `400` (missing campaign_id/file, size exceeded), `404` (campaign not
 found), `403` (not owner), `500` (upload/record failure with `details`).
+
+---
+
+## MCP tool connections — overview
+
+A campaign's agent can call **external MCP servers** the business owns (its OpenTable, CRM, internal
+tools, …). Rather than pasting a secret into the campaign, the business creates a **connection** once —
+the platform stores the credential **encrypted**, refreshes OAuth tokens automatically, and injects auth
+at call time. A campaign then just references the connection by `connection_id` on an
+[`api_endpoints[]`](#api_endpoints-element) MCP entry. Connections are **advertiser-level and reusable**
+across that advertiser's campaigns.
+
+**Wizard flow (what the MCP config step does):**
+
+1. User pastes an MCP URL → `POST mcp-connection {action:"probe", mcp_url}`. The response's `needs` tells
+   you which input to show next.
+2. Branch on `needs`:
+   - `"nothing"` (public server) → `POST {action:"connect", mcp_url, auth_type:"none"}` → get an **active**
+     `connection_id`.
+   - `"api_key"` → show a secret field → `POST {action:"connect", mcp_url, auth_type:"header", header_name?, secret}`
+     → **active** `connection_id`.
+   - `"oauth_popup"` → `POST {action:"connect", mcp_url, auth_type:"oauth2"}` → returns
+     `{connection_id, status:"pending", authorize_url}`. **Open `authorize_url` in a popup.** On success the
+     [mcp-oauth-callback](#mcp-oauth-callback) page flips the connection to `active` and posts
+     `window.postMessage({type:"mcp-oauth", ok:true})` to the opener. Treat that message (or a `GET`
+     re-list showing `status:"active"`) as done.
+3. Put the `connection_id` onto the MCP endpoint in `api_endpoints[]` and submit
+   [campaign-create](#campaign-create) / [campaign-update](#campaign-update). Omit `auth_header`/`api_auth`
+   for that server.
+
+**Connection `status` values:** `active` (usable) · `pending` (OAuth authorize not yet completed) ·
+`needs_reauth` (token refresh failed — prompt the user to reconnect) · `error` (probe/exchange failed;
+see `last_error`).
+
+---
+
+## mcp-connection
+```yaml
+method: POST | GET | DELETE
+path:   /functions/v1/mcp-connection
+auth:   jwt:email
+proxy:  /api/proxy/mcp-connection
+```
+**Purpose.** Create, authenticate, list, and delete the advertiser's external-MCP connections. `POST` is
+dispatched by `body.action` (`probe` | `connect`); `GET` lists; `DELETE` removes one. All rows are scoped
+to the authenticated advertiser.
+
+### Action `probe` — classify a server's auth
+`POST { action: "probe", mcp_url }`
+
+**Request**
+| Field | Type | Req | Description |
+|---|---|---|---|
+| action | `"probe"` | yes | |
+| mcp_url | string | yes | The MCP server URL to inspect. |
+
+**Response `200`**
+| Field | Type | Description |
+|---|---|---|
+| kind | `"none"` \| `"header"` \| `"oauth2"` | Detected auth: public / API-key / OAuth 2.1. |
+| needs | `"nothing"` \| `"api_key"` \| `"oauth_popup"` | What the UI should collect next. |
+| resource | string | Canonical MCP resource URL (bound as the OAuth token audience). |
+| oauth | object? | Present when `kind:"oauth2"` — see [`oauth` object](#probe-oauth-object). |
+| hint | string? | Diagnostic when classification fell back to `header` (e.g. the `WWW-Authenticate` value). |
+
+#### `probe` oauth object
+| Field | Type | Description |
+|---|---|---|
+| authorization_endpoint | string | The authorization server's authorize URL (informational; the popup uses `authorize_url` from `connect`). |
+| registration_supported | boolean | `true` ⇒ Dynamic Client Registration works, so `connect` needs no `client_id`. |
+| scopes_supported | string[] | Scopes the server advertises. |
+
+```ts
+interface ProbeResponse {
+  kind: 'none' | 'header' | 'oauth2';
+  needs: 'nothing' | 'api_key' | 'oauth_popup';
+  resource: string;
+  oauth?: { authorization_endpoint: string; registration_supported: boolean; scopes_supported: string[] };
+  hint?: string;
+}
+```
+
+### Action `connect` — create a connection
+`POST { action: "connect", mcp_url, label?, auth_type, … }`
+
+**Request**
+| Field | Type | Req | Description |
+|---|---|---|---|
+| action | `"connect"` | yes | |
+| mcp_url | string | yes | Same URL you probed. |
+| label | string | no | Human name for the connection (shown in lists). |
+| auth_type | `"none"` \| `"header"` \| `"oauth2"` | yes | Which credential shape to create (from `probe.kind`). |
+| header_name | string | no | `header` only. Header to send (default `"Authorization"`). |
+| secret | string | for `header` | `header` only. The secret value, e.g. `"Bearer sk-…"` or a raw API key. **Encrypted at rest.** |
+| client_id | string | no | `oauth2` only. Provide a pre-registered client when the server has no dynamic registration. |
+| client_secret | string | no | `oauth2` only. For confidential clients; **encrypted at rest**. |
+
+**Response `200`**
+| Field | Type | Description |
+|---|---|---|
+| connection_id | uuid | The created `advertiser_mcp_connections` id — put this on the campaign's MCP endpoint. |
+| status | `"active"` \| `"pending"` | `active` for `none`/`header`; `pending` for `oauth2` until the popup completes. |
+| authorize_url | string? | `oauth2` only — open this in a popup to finish authorization. |
+
+```ts
+type ConnectResponse =
+  | { connection_id: string; status: 'active' }                       // none | header
+  | { connection_id: string; status: 'pending'; authorize_url: string }; // oauth2
+```
+
+### Action list — `GET /mcp-connection`
+Lists the advertiser's connections (no secrets ever returned).
+
+**Response `200`**
+| Field | Type | Description |
+|---|---|---|
+| connections | object[] | See [`connections[]` element](#connections-element). |
+
+#### `connections[]` element
+| Field | Type | Description |
+|---|---|---|
+| id | uuid | Use as `connection_id`. |
+| mcp_url | string | Server URL. |
+| label | string \| null | |
+| auth_type | `"none"` \| `"header"` \| `"oauth2"` | |
+| status | `"active"` \| `"pending"` \| `"needs_reauth"` \| `"error"` | |
+| last_error | string \| null | Populated on `error`/`needs_reauth`. |
+| created_at / updated_at | ISO string | |
+
+### Action delete — `DELETE /mcp-connection?id=<uuid>`
+Deletes one of the advertiser's connections. **Response `200`:** `{ "success": true }`.
+
+### Example
+**Probe request**
+```json
+{ "action": "probe", "mcp_url": "https://clearpath--opentable-booker.apify.actor/mcp" }
+```
+**Probe response** `200`
+```json
+{
+  "kind": "oauth2",
+  "needs": "oauth_popup",
+  "resource": "https://clearpath--opentable-booker.apify.actor/mcp",
+  "oauth": {
+    "authorization_endpoint": "https://console.apify.com/authorize/oauth",
+    "registration_supported": true,
+    "scopes_supported": ["full_api_access"]
+  }
+}
+```
+**Connect request** (OAuth server with dynamic registration)
+```json
+{ "action": "connect", "mcp_url": "https://clearpath--opentable-booker.apify.actor/mcp", "label": "OpenTable (Apify)", "auth_type": "oauth2" }
+```
+**Connect response** `200`
+```json
+{
+  "connection_id": "99999999-9999-9999-9999-999999999999",
+  "status": "pending",
+  "authorize_url": "https://console.apify.com/authorize/oauth?response_type=code&client_id=…&redirect_uri=…&state=…&code_challenge=…&code_challenge_method=S256&scope=full_api_access&resource=https%3A%2F%2F…"
+}
+```
+**Connect request** (API-key server)
+```json
+{ "action": "connect", "mcp_url": "https://mcp.example.com/mcp", "label": "Example CRM", "auth_type": "header", "header_name": "Authorization", "secret": "Bearer sk-live-abc123" }
+```
+**Connect response** `200`
+```json
+{ "connection_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "status": "active" }
+```
+Then reference it on the campaign:
+```json
+{
+  "api_endpoints": [
+    { "type": "mcp", "name": "crm", "description": "Example CRM tools", "mcp_url": "https://mcp.example.com/mcp", "connection_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "tool_prefix": "crm__" }
+  ]
+}
+```
+
+### Errors
+| HTTP | code | When |
+|---|---|---|
+| 400 | — | `mcp_url required` / `invalid auth_type` / `unknown action` / `secret required for header auth` / `{error:"no_client", message}` (OAuth server has no DCR and no `client_id` given) / `{error:"server does not advertise OAuth", hint}` |
+| 401 | — | missing/invalid token |
+| 404 | — | advertiser not found for this user |
+| 405 | — | unsupported method |
+| 500 | `server_error` | insert/registration/probe failure (`message`) |
+
+---
+
+## mcp-oauth-callback
+```yaml
+method: GET
+path:   /functions/v1/mcp-oauth-callback
+auth:   public   # browser redirect; authenticated by the opaque `state`
+proxy:  (called directly by the browser)
+```
+**Purpose.** OAuth 2.1 authorization-code return for an `oauth2` connection. The external authorization
+server redirects the user's browser here with `?code&state`; the function exchanges the code (PKCE),
+stores the encrypted tokens, and flips the connection to `active`. **The frontend does not call this
+directly** — it only opens the `authorize_url` from `connect`; this is the redirect target.
+
+### Request (query params)
+| Param | Type | Description |
+|---|---|---|
+| code | string | Authorization code (present on success). |
+| state | string | Opaque value that binds the callback to the pending connection. |
+| error | string? | Present instead of `code` when the user denied / the server errored. |
+
+### Response
+Returns an **HTML page** (not JSON): `200` on success, `400` on failure. It posts
+`window.postMessage({ type: "mcp-oauth", ok: <boolean> }, "*")` to `window.opener` and auto-closes after
+~1.5s. The frontend should listen for that message on the window that opened the popup (and/or re-list
+connections and check for `status:"active"`).
+
+> The redirect URI is `${PENGUIN_BASE_URL}/mcp-oauth-callback`. With dynamic client registration it's
+> registered automatically; for a pre-registered `client_id`, this exact URI must be allow-listed on the
+> MCP server's OAuth app.
 
 ---
 
