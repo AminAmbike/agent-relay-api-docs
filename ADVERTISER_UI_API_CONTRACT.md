@@ -121,7 +121,7 @@ authenticated by an HMAC-signed `state` param, not a JWT.
 
 Every endpoint is a Supabase **edge function** in the `Penguin-Supabase-Edge-Functions` repo: the
 **Endpoint** name is the function slug — source at `supabase/functions/<slug>/index.ts`, deployed at
-`/functions/v1/<slug>`. (`campaign-logs`'s six actions are all one function, dispatched by `body.action`.)
+`/functions/v1/<slug>`. (`campaign-logs`'s seven actions are all one function, dispatched by `body.action`.)
 
 | # | Endpoint (= edge-function slug) | Method | Auth | Purpose |
 |---|---|---|---|---|
@@ -1381,7 +1381,7 @@ Request: `{ action:"list_sessions", campaign_id?, limit?, offset?, start_date?, 
 
 | Field | Type | Description |
 |---|---|---|
-| session_id | uuid | Use for `get_session`; correlates with `feedback.session_id`. |
+| session_id | uuid | Use for `get_session_view` (preferred) or `get_session`; correlates with `feedback.session_id`. |
 | capability_id | uuid | Which campaign the session was with. |
 | ad_unit_id | uuid | Ad variant clicked. |
 | agent_id | string | The consuming agent's id. |
@@ -1389,9 +1389,10 @@ Request: `{ action:"list_sessions", campaign_id?, limit?, offset?, start_date?, 
 | total_tokens | int | Tokens consumed. |
 | total_cost_usd | number | Session cost. |
 | status | string | `active` \| `completed` \| `expired` \| `cancelled`. |
+| task_context | string \| null | The initiating task/current-context brief. Null for older sessions. |
 | started_at / last_updated_at / ended_at | timestamptz | `ended_at` null while active. |
 | auction_query | string \| null | The raw user query the auction ran with (if this session came via auction). Resolved read-time from the `decisions` record; null for direct sessions. |
-| auction_result_count | int | Number of ad units/candidates **shown in that auction** (the field size). 0 / null for direct sessions. |
+| auction_result_count | int | Number of ad units **actually returned to the consuming agent** after relevance filtering and result limits. 0 / null for direct sessions. |
 | session_origin | string | `auction` (surfaced via an auction) or `direct` (launched directly). |
 
 **Request**
@@ -1409,6 +1410,7 @@ Request: `{ action:"list_sessions", campaign_id?, limit?, offset?, start_date?, 
       "agent_id": "agt_ABC123", "message_count": 3, "total_tokens": 78715, "total_cost_usd": 0.197195,
       "status": "completed", "started_at": "2026-06-29T00:05:36Z",
       "last_updated_at": "2026-06-29T00:09:22Z", "ended_at": "2026-06-29T00:09:22Z",
+      "task_context": "Integrate webhooks into an iOS app",
       "auction_query": "reliable webhook delivery API", "auction_result_count": 5, "session_origin": "auction"
     }
   ],
@@ -1426,13 +1428,13 @@ Request: `{ action:"get_session", session_id }`. Response: `{ item: SessionDetai
 | conversation_history | Array&lt;{role, content}&gt; | ⚠️ **The full transcript.** `role` ∈ `user`/`assistant`; ordered. |
 | structured_data | object | Fields the agent extracted during the session (open-ended). |
 | task_context | string \| null | The initiating task/context — the UI's **"Current task"**. |
-| auction_ranking | object \| null | **Powers the "Auction" ranking card** (this capability's rank + the anonymized competitor scores). Only present on `get_session` for **auction-origin** sessions; null for direct or when the decision can't be resolved. See sub-table. |
+| auction_ranking | object \| null | **Powers the "Auction" ranking card** (this capability's rank + the anonymized competitor scores). Present for **auction-origin** sessions when the decision can be resolved; null for direct sessions. Also included inside `get_session_view.session`. See sub-table. |
 
 **`auction_ranking` object** (only on `get_session`)
 | Field | Type | Description |
 |---|---|---|
-| position | int \| null | This capability's rank in the auction — the `#1` in "Ranked #1 of 50". |
-| candidate_count | int \| null | Total candidates in the auction — the `50`. `candidate_count − field.length` = the "+ N more · others anonymized" count. |
+| position | int \| null | This capability's rank among units actually returned to the consuming agent. |
+| candidate_count | int \| null | Number of units actually returned to the consuming agent. Prefer this over raw recall/candidate counts. `candidate_count − field.length` = the "+ N more · others anonymized" count. |
 | field | array | The visible ranked rows, competitor identities stripped. See sub-table. |
 
 **`auction_ranking.field[]` element**
@@ -1442,11 +1444,11 @@ Request: `{ action:"get_session", session_id }`. Response: `{ item: SessionDetai
 | composite | number \| null | Composite ranking score (drives the bar length). |
 | is_you | boolean | `true` = this advertiser's own agent (rendered bold as "Your agent"); `false` rows render as "Competitor N". |
 
-> **Where the card comes from:** "Ranked #1 of 50 for '<query>'" = `auction_ranking.position` of
+> **Where the card comes from:** "Ranked #1 of 5 for '<query>'" = `auction_ranking.position` of
 > `.candidate_count`, with `auction_query` as the query. Each bar is a `field[]` row (`relevance` as the
-> number, `is_you` flags your agent). The "+45 more · others anonymized" line is
-> `candidate_count − field.length`. All of this is on `get_session` only — `list_sessions` carries just
-> `auction_query` / `auction_result_count` / `session_origin`.
+> number, `is_you` flags your agent). The "+2 more · others anonymized" line is
+> `candidate_count − field.length`. `get_session_view.session` includes the same object. `list_sessions`
+> carries just `auction_query` / `auction_result_count` / `session_origin`.
 
 **Request**
 ```json
@@ -1468,13 +1470,114 @@ Request: `{ action:"get_session", session_id }`. Response: `{ item: SessionDetai
     ],
     "structured_data": { "endpoint_url": "https://acme.co/hook" },
     "auction_ranking": {
-      "position": 1, "candidate_count": 50,
+      "position": 1, "candidate_count": 5,
       "field": [
         { "relevance": 1.00, "composite": 0.98, "is_you": true },
         { "relevance": 1.00, "composite": 0.97, "is_you": false },
         { "relevance": 0.99, "composite": 0.95, "is_you": false }
       ]
     }
+  }
+}
+```
+
+Errors: `400 missing_params`, `403 forbidden` (other advertiser), `404 not_found`.
+
+### action: `get_session_view`
+Request: `{ action:"get_session_view", session_id }`. Response: a single source of truth for the
+advertiser conversation drawer/page. It combines the session transcript, customer/search context, outcome
+feedback, learned insights, and auction billing into one payload. Existing `get_session`, `list_feedback`,
+and `get_tool_context` remain supported; prefer `get_session_view` when opening one session.
+
+```ts
+interface GetSessionViewResponse {
+  session: SessionDetail;
+  feedback: Feedback | null;
+  learnings: Learning[];
+  billing: SessionBilling;
+}
+```
+
+**Top-level fields**
+| Field | Type | Description |
+|---|---|---|
+| session | SessionDetail | Same shape as `get_session.item`, including `task_context`, `user_context`, `auction_query`, `auction_result_count`, `session_origin`, `auction_ranking`, `conversation_history`, and `structured_data`. |
+| feedback | Feedback \| null | Latest feedback row for the session, UI-safe. `feedback_text` is the summary/fallback display value, not necessarily raw feedback. |
+| learnings | Learning[] | Active `capability_learnings` rows whose `evidence_session_ids` include this session. |
+| billing | SessionBilling | Actual session charge plus the second-price clearing quote when available. |
+
+**`SessionBilling` object**
+| Field | Type | Description |
+|---|---|---|
+| charged_cents | cents \| null | Actual amount the business paid for this session. Source: `capability_sessions.charged_cents`. Display as "Business paid". |
+| charge_status | string \| null | `charged`, `failed`, `not_applicable`, `pending`, or null. |
+| billing_source | string \| null | `auction_receipt`, `direct_free`, `stale_quote_free`, `future_usage_billed`, or null. |
+| clearing_price_cents | cents \| null | The second-price auction amount. Prefers consumed `session_quotes.clearing_price_cents`; falls back to `charged_cents`. |
+| clearing_price_source | string \| null | `consumed_quote` when read from `session_quotes`; `session_charge` when falling back to `capability_sessions.charged_cents`; null when unavailable. |
+
+**Request**
+```json
+{ "action": "get_session_view", "session_id": "33333333-3333-3333-3333-333333333333" }
+```
+**Response** `200`
+```json
+{
+  "session": {
+    "session_id": "33333333-3333-3333-3333-333333333333",
+    "capability_id": "22222222-2222-2222-2222-222222222222",
+    "ad_unit_id": "44444444-4444-4444-4444-444444444444",
+    "agent_id": "agt_ABC123",
+    "status": "completed",
+    "task_context": "Integrate webhooks into an iOS app",
+    "user_context": "Senior mobile engineer building a production app.",
+    "auction_query": "reliable webhook delivery API",
+    "auction_result_count": 5,
+    "session_origin": "auction",
+    "conversation_history": [
+      { "role": "user", "content": "How do I configure retries?" },
+      { "role": "assistant", "content": "Retries use exponential backoff; set max_attempts…" }
+    ],
+    "structured_data": { "endpoint_url": "https://acme.co/hook" },
+    "auction_ranking": {
+      "position": 1,
+      "candidate_count": 5,
+      "field": [
+        { "relevance": 1.0, "composite": 0.98, "is_you": true },
+        { "relevance": 0.97, "composite": 0.91, "is_you": false }
+      ]
+    }
+  },
+  "feedback": {
+    "id": "55555555-5555-5555-5555-555555555555",
+    "session_id": "33333333-3333-3333-3333-333333333333",
+    "capability_id": "22222222-2222-2222-2222-222222222222",
+    "agent_id": "agt_ABC123",
+    "feedback_summary": "Clear, production-ready integration guidance.",
+    "feedback_text": "Clear, production-ready integration guidance.",
+    "display_source": "summary",
+    "score": 88,
+    "bonus_amount_cents": 0,
+    "resolved_at": null,
+    "created_at": "2026-06-29T00:12:00Z"
+  },
+  "learnings": [
+    {
+      "key": "retry_policy_details",
+      "learning": "Customers ask for exact retry semantics",
+      "description": "Expose max attempts, backoff timing, and failure behavior clearly.",
+      "surfaced_count": 2,
+      "status": "active",
+      "evidence_session_ids": ["33333333-3333-3333-3333-333333333333"],
+      "created_at": "2026-06-29T00:20:00Z",
+      "updated_at": "2026-06-29T00:20:00Z"
+    }
+  ],
+  "billing": {
+    "charged_cents": 43,
+    "charge_status": "charged",
+    "billing_source": "auction_receipt",
+    "clearing_price_cents": 43,
+    "clearing_price_source": "consumed_quote"
   }
 }
 ```
@@ -1491,7 +1594,9 @@ Request: `{ action:"list_feedback", campaign_id?, limit?, offset?, start_date?, 
 | session_id | uuid | The session this feedback is about. |
 | capability_id | uuid | The campaign. |
 | agent_id | string | The consuming agent that left it. |
-| feedback_text | string | ⚠️ Holds the **business-readable summary** (the raw dense note is replaced by a summary in this field). |
+| feedback_summary | string \| null | Stored business-readable summary, when generated. |
+| feedback_text | string | ⚠️ Holds the **business-readable display text**: the generated summary when present, otherwise a short raw fallback. |
+| display_source | string | `summary` \| `truncated_raw` \| `raw_short` \| `none`; tells whether `feedback_text` came from `feedback_summary` or a raw fallback. |
 | score | int \| null | 0–100 satisfaction; null if not given. |
 | bonus_amount_cents | cents \| null | Bonus paid for the feedback (paid-feedback flow), else 0. |
 | resolved_at | timestamptz \| null | When the bonus was resolved. |
@@ -1509,7 +1614,9 @@ Request: `{ action:"list_feedback", campaign_id?, limit?, offset?, start_date?, 
       "id": "55555555-5555-5555-5555-555555555555",
       "session_id": "33333333-3333-3333-3333-333333333333",
       "capability_id": "22222222-2222-2222-2222-222222222222", "agent_id": "agt_ABC123",
+      "feedback_summary": "Clear, production-ready integration guidance.",
       "feedback_text": "Clear, production-ready integration guidance.",
+      "display_source": "summary",
       "score": 88, "bonus_amount_cents": 0, "resolved_at": null, "created_at": "2026-06-29T00:12:00Z"
     }
   ],
@@ -1536,7 +1643,7 @@ profile the nightly roller maintains for one capability.
 | description | string | Longer explanation / detail. |
 | surfaced_count | int | How many sessions evidenced this. |
 | status | string | `active` (others are filtered out server-side). |
-| evidence_session_ids | uuid[] | Sessions that evidenced it — resolve each via `get_session`. |
+| evidence_session_ids | uuid[] | Sessions that evidenced it — resolve each via `get_session_view` (preferred) or `get_session`. |
 | updated_at | timestamptz | Last time the roller touched it. |
 
 > ⚠️ **Shape changed in the pivot.** Older docs described `known_issues` / `knowledge_gaps` /
@@ -1610,18 +1717,18 @@ for (const f of fb.items) feedbackByCampaign.set(f.capability_id, (feedbackByCam
 
 ## Entity relationships
 - `campaigns.id` == `capability_id` everywhere (campaign and capability are the same object).
-- `feedback.session_id` → a `list_sessions`/`get_session` session (a session may have 0 or 1 feedback).
-- `learnings[].evidence_session_ids` → the sessions that produced a learning (resolve via `get_session`).
+- `feedback.session_id` → a `list_sessions`/`get_session_view` session (a session may have 0 or 1 feedback).
+- `learnings[].evidence_session_ids` → the sessions that produced a learning (resolve via `get_session_view`).
 
 ## Units cheat-sheet
 | Cents (÷100 to display) | Dollars |
 |---|---|
-| earnings_balance, lifetime_earnings, net_cents, gross_cents, fee_cents, bonus_amount_cents, amount_cents, deliverable_price_cents | wallet_balance, budget, budget_spent, total_cost_usd, new_earnings_balance |
+| earnings_balance, lifetime_earnings, net_cents, gross_cents, fee_cents, bonus_amount_cents, amount_cents, deliverable_price_cents, charged_cents, clearing_price_cents | wallet_balance, budget, budget_spent, total_cost_usd, new_earnings_balance |
 
 ## Fields whose name lies (pivot legacy)
 | Field | Actually is |
 |---|---|
-| `feedback_text` (list_feedback) | the business-readable **summary**, not the raw note |
+| `feedback_text` (list_feedback / get_session_view.feedback) | the business-readable **summary** or short fallback, not necessarily the raw note |
 | `learning` (get_tool_context) | a human-readable headline insight |
 | `capability_type` (campaign-create) | ignored — always `dynamic` |
 | `clicks` (advertiser-campaigns) | the **conversation count** ("Total Convos"), not ad clicks |
